@@ -1,51 +1,91 @@
+"""
+每天自动获取机票最低价并发送至邮箱
+"""
 # -*- coding: utf-8 -*-
+from configobj import ConfigObj
 
 import asyncio
 import aiohttp
 import json
-from . import mongo
 
-model = mongo.model()
-model.create_index('musics', 'id')
-model = model.db
+BIG_NUM = 9999999
+
+CF = ConfigObj('./config/travel.conf')
+
+API_URL = CF['api']['url']
+BROWSE_ROUTES = CF['api']['browseroutes']
+DETAIL_URL = CF['api']['detailurl']
+API_KEY = CF['api']['apikey']
+COUNTRY = CF['args']['country']
+CURRENCY = CF['args']['currency']
+LOCALE = CF['args']['locale']
+TRIPS = CF['args']['trips']
+
+BROWSE_ROUTES = BROWSE_ROUTES.format(
+    country=COUNTRY, currency=CURRENCY, locale=LOCALE)
+
+trips = []
+for trip in TRIPS:
+    originPlace = CF['args']['trips'][trip]['originPlace']
+    destinationPlace = CF['args']['trips'][trip]['destinationPlace']
+    outboundPartialDate = CF['args']['trips'][trip]['outboundPartialDate']
+    inboundPartialDate = CF['args']['trips'][trip]['inboundPartialDate']
+    direct = CF['args']['trips'][trip]['direct']
+    url = DETAIL_URL.format(
+        originPlace=originPlace,
+        destinationPlace=destinationPlace,
+        outboundPartialDate=outboundPartialDate,
+        inboundPartialDate=inboundPartialDate,
+        apikey=API_KEY
+    )
+    trips.append({
+        'url': API_URL+BROWSE_ROUTES+url,
+        'direct': direct
+    })
+
+print(trips)
+
 
 async def fetch(session, url):
     async with session.get(url) as response:
         return await response.text()
 
-async def get_music(headers, playlist_url):
+
+async def get_trip(api_url, direct):
     async with aiohttp.ClientSession() as session:
-        result = await fetch(session, playlist_url)
+        result = await fetch(session, api_url)
         result = json.loads(result)
-        for item in result['result']['tracks']:
-            name = item['name']
-            artists = item['artists'][0]['name']
-            obj = {
-                'name': name,
-                'artists': artists,
-                'id': id
-            }
-            try:
-                print('in')
-                model['musics'].insert(obj)
-            except Exception as e:
-                print('not in')
+        min_price = BIG_NUM
+        carrier_id = ''
+        carrier_name = ''
+        print(result)
+        for quote in result['Quotes']:
+            if direct == 'true':
+                if quote['Direct'] is False:
+                    continue
+            if quote['MinPrice'] < min_price:
+                min_price = quote['MinPrice']
+                carrier_id = quote['OutboundLeg']['CarrierIds'][0]
+
+        if min_price == BIG_NUM:
+            raise NameError('没有获取到机票价格')
+
+        for carrier in result['Carriers']:
+            if carrier['CarrierId'] == carrier_id:
+                carrier_name=carrier['Name']
+
+        print(min_price,carrier_name)
 
 
-def get_all_music(api):
-    headers = api['header']
-    music_url = api['music_url']
-    playlists = model['playlist'].find()
+def get_all_trips(trips):
     promise = []
     loop = asyncio.get_event_loop()
-    for playlist in playlists:
-        if playlist['classify'] in hasDone:
-            if len(promise)==10:
-                
-                # 执行coroutine
-                loop.run_until_complete(asyncio.wait(promise))
-                
-                promise=[]
-            else:
-                promise.append(get_music(headers, music_url+playlist['id']))
+    for trip in trips:
+        promise.append(get_trip(trip['url'], trip['direct']))
+    loop.run_until_complete(asyncio.wait(promise))
     loop.close()
+
+try:
+    get_all_trips(trips)
+except Exception as err:
+    print('err')
